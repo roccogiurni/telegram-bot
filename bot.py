@@ -11,29 +11,28 @@ from telegram.ext import (
     MessageHandler, ContextTypes, filters
 )
 import logging
-import nest_asyncio
 import asyncio
+import nest_asyncio
 
 # ✅ Logging base
 logging.basicConfig(level=logging.INFO)
 
-# ✅ Variabili d’ambiente per Render
+# ✅ Variabili ambiente
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # impostato da Render
 
 CSV_FILE = "log_attivita.csv"
 user_data = {}
 
-# ✅ Flask app per webhook
+# ✅ Flask app per Webhook
 flask_app = Flask(__name__)
-application = None  # sarà inizializzata in main()
 
 def log_to_csv(cf, azione, data_ora, posizione=None, nota=None):
     with open(CSV_FILE, mode="a", newline='', encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([cf, azione, data_ora, posizione, nota])
 
-# ✅ Start
+# ✅ /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if user_data.get(user_id, {}).get("privacy_accepted") is not True:
@@ -42,15 +41,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Rifiuto", callback_data="reject_privacy")]
         ]
         await update.message.reply_text(
-            "📍 Questo bot utilizza la tua posizione *solo per fini lavorativi*.\n\n"
-            "Vuoi continuare?",
+            "📍 Questo bot utilizza la tua posizione *solo per fini lavorativi*.\n\nVuoi continuare?",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text("Inserisci il tuo Codice Fiscale:")
 
-# ✅ Gestione accettazione privacy
+# ✅ Risposta privacy
 async def privacy_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -62,7 +60,7 @@ async def privacy_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("❌ Non puoi usare il bot senza accettare la privacy.")
 
-# ✅ Codice Fiscale
+# ✅ Ricevi CF
 async def receive_cf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if not user_data.get(user_id, {}).get("privacy_accepted"):
@@ -74,22 +72,24 @@ async def receive_cf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Codice Fiscale registrato: `{cf}`", parse_mode="Markdown")
     await send_main_buttons(update, context)
 
-# ✅ Menu pulsanti
+# ✅ Mostra pulsanti principali
 async def send_main_buttons(update_or_context, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [InlineKeyboardButton("🟢 Entrata", callback_data="entrata")],
         [InlineKeyboardButton("📍 Invia posizione", callback_data="invia_posizione")],
         [InlineKeyboardButton("🔴 Uscita", callback_data="uscita")]
     ]
+    markup = InlineKeyboardMarkup(buttons)
+
     if isinstance(update_or_context, Update):
         if update_or_context.message:
-            await update_or_context.message.reply_text("Cosa vuoi fare?", reply_markup=InlineKeyboardMarkup(buttons))
+            await update_or_context.message.reply_text("Cosa vuoi fare?", reply_markup=markup)
         elif update_or_context.callback_query:
-            await update_or_context.callback_query.message.reply_text("Cosa vuoi fare?", reply_markup=InlineKeyboardMarkup(buttons))
+            await update_or_context.callback_query.message.reply_text("Cosa vuoi fare?", reply_markup=markup)
     else:
-        await context.bot.send_message(chat_id=update_or_context, text="Cosa vuoi fare?", reply_markup=InlineKeyboardMarkup(buttons))
+        await context.bot.send_message(chat_id=update_or_context, text="Cosa vuoi fare?", reply_markup=markup)
 
-# ✅ Pulsanti principali
+# ✅ Handler pulsanti
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -119,7 +119,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "invia_posizione":
         await ask_position(context, user_id)
 
-# ✅ Chiede la posizione
+# ✅ Richiesta posizione
 async def ask_position(context, user_id):
     await context.bot.send_message(
         chat_id=user_id,
@@ -131,7 +131,7 @@ async def ask_position(context, user_id):
         )
     )
 
-# ✅ Gestione posizione
+# ✅ Ricezione posizione
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     data = user_data.get(user_id, {})
@@ -155,12 +155,13 @@ async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user_id]["awaiting_position_after_uscita"] = False
         user_data[user_id]["awaiting_note"] = True
         await update.message.reply_text("📝 Ora scrivimi una nota: dove sei stato, cosa hai fatto...")
+
     else:
         log_to_csv(cf, "Posizione Generica", now, pos)
         await update.message.reply_text("📍 Posizione registrata.")
         await send_main_buttons(update, context)
 
-# ✅ Note
+# ✅ Gestione note
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     data = user_data.get(user_id, {})
@@ -180,8 +181,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("⛔ Non ho capito. Usa i pulsanti oppure scrivi una nota quando richiesto.")
 
-# ✅ Route webhook corretta
-@flask_app.route("/webhook", methods=["POST"])
+# ✅ Flask webhook (corretto)
+@flask_app.route(f"/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, application.bot)
@@ -199,11 +200,9 @@ async def main():
     application.add_handler(MessageHandler(filters.LOCATION, location_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # ✅ Imposta webhook
     await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     print("✅ Bot avviato con Webhook")
 
-# ✅ Avvio
 if __name__ == "__main__":
     nest_asyncio.apply()
     asyncio.run(main())
